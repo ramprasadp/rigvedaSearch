@@ -17,5 +17,8 @@ mysqladmin create rigveda
 mysql rigveda < rigveda.sql
 
 
+echo "Please copy cgi and pword in cgi-bin directory "
+
+
    
 

@@ -1,0 +1,646 @@
+#!/usr/bin/perl
+
+use strict;
+use Template;
+use DBI;
+use CGI;
+use Data::Dumper;
+use String::Diff;
+use Time::HiRes qw(gettimeofday tv_interval);
+use Algorithm::Combinatorics;
+use Math::Prime::Util;
+
+
+my $tt = new Template();
+my $q = new CGI;
+my $in = $q->param("inword");
+$in=lc($in);
+$in=~s/[^a-z]//g;
+
+$gl::minlength=2;
+
+my $dsn = "DBI:mysql:database=words;host=localhost";
+my $dbh = DBI->connect($dsn, "root", "") || die;
+my %hash = (inword=>$in,data=>[]);
+$hash{echar}=lc($q->param('echar'));  
+$hash{echar}=~s/[^a-z]//g;
+
+if($q->param("remWord")){ 
+  print "Content-type: text/plain\n\n";
+  my $w = $q->param("remWord");
+  $w=~s/\W//gs;
+  my $sql = "update words set common=0 where word='$w'";
+  print "$sql\n";
+  $dbh->do($sql);
+  exit;
+}
+
+my @inwords = ($in);
+
+print "Content-type: text/html\n\n";
+if($in=~s/^(.{14}).+$/$1/){ 
+    $hash{message}="Word too big , max 14 chars";
+}
+
+
+$hash{f}=$q->param('find7');
+$hash{nf}=$q->param('find9');
+
+if($hash{f}){ 
+    $gl::minlength=7;
+    foreach ( 'a' .. 'z') { 
+	push @inwords , $in . $_;
+    }
+} elsif($hash{nf}){ 
+    $gl::minlength=7;
+    foreach my $l( 'a' .. 'z') { 
+	foreach my $m( 'a' .. 'z') { 
+	push @inwords , $in . $l .$m;
+	}
+    }
+} elsif($hash{echar}) { 
+    $gl::minlength=7;
+    my @ew = uniqueOf($hash{echar});
+    foreach my $l(@ew) {
+        foreach my $m( 'a' .. 'z') {
+	    push @inwords , $in . $l .$m;
+        }
+    }
+}
+
+
+
+$hash{re}=lc($q->param('re'));
+$hash{midchar}=lc($q->param('midchar'));  
+
+$hash{subw}=lc($q->param('subw'));
+$hash{subw}=~s/\s//g;
+if($hash{subw}=~/^\w+$/){ 
+    $hash{subw}='%'.$hash{subw}.'%';
+}
+#print Dumper(\%hash); exit;
+populate_data($dbh,\@inwords,\%hash) if($in);
+#print Dumper([\%hash]);
+my $e = $q->param('e');
+$e =~s/[^\-\d]+//g;
+
+if($hash{re}=~/\S/){ 
+    my $re = $hash{re};
+    $re=~s/^\s+//;
+    $re=~s/\s+$//;
+    @{$hash{data}} = grep {/$re/} @{$hash{data}};
+}
+if($hash{midchar}=~/\S/){ 
+    my @mw = ($hash{midchar}=~/([a-z])/g);
+    @{$hash{data}} = filterMids($hash{data},\@mw);
+}
+if($hash{echar}){ 
+    my @mw = uniqueOf($hash{echar});
+    my @ret;
+    $hash{nf}=1;
+    foreach my $w( @{$hash{data}}) { 
+	next unless(length($w) > 7 );
+	next unless(midcharOf($w,\@mw));
+	push @ret , $w;
+    }
+    $hash{data}=\@ret;
+}
+		    
+sub midcharOf { 
+    my($w,$lref)=@_;
+    foreach my $c(@$lref){ 
+	if($w=~/^.{3,}$c.{3,}$/){
+#	    print "$c is mid of $w <br/>\n";
+	    return 1;
+	}
+    }
+    return 0;
+}
+
+foreach my $w(sort @{$hash{data}}){
+#    next unless($w=~/aequorins/);
+    my $l = length($w);
+    my $diff = "";
+    
+    if($hash{f} || $hash{nf} || $hash{echar} ) { 
+	$diff = diffwords($in,$w);
+    }
+    $w = "$w $diff";
+    if($l == 3) { 
+	push @{$hash{w3}} , $w;
+	$hash{tw3}='(3)';
+	next;
+    }
+
+    if($l == 4) { 
+	push @{$hash{w4}} , $w;
+	$hash{tw4}='(4)';
+	next;
+    }
+
+    if($l == 5) { 
+	push @{$hash{w5}} , $w;
+	$hash{tw5}='(5)';
+	next;
+    }
+
+    if($l == 6) { 
+	push @{$hash{w6}} , $w;
+	$hash{tw6}='(6)';
+	next;
+    }
+
+    if($l == 7) { 
+	push @{$hash{w7}} , $w;
+	$hash{tw7}='(7)';
+	next;
+    }
+    if($l == 8) { 
+	push @{$hash{w8}} , $w;
+	$hash{tw8}='(8)';
+	next;
+    }
+    if($l == 9) { 
+	push @{$hash{w9}} , $w;
+	$hash{tw9}='(9)';
+	next;
+    }
+}
+#print Dumper([\%hash]);
+
+
+
+
+$tt->process(\*DATA,\%hash) || die $tt->error();
+
+
+
+sub diffwords { 
+    my($w1,$w2)=sword(@_);
+    my $diff = String::Diff::diff($w1,$w2);
+#    print Dumper([$diff, $w1,$w2])  ;
+    my $ret="";
+    while($diff->[1] =~/\{(\w+)\}/g) { 
+	$ret .=$1;
+    } 
+    $ret = "{$ret}" if ($ret);
+    return $ret;
+}
+
+
+sub combinations { 
+    my($str)=@_;
+    my @w = split(//,$str);
+    my %ret;
+    foreach my $i  ( 3 .. scalar(@w)){
+	Math::Prime::Util::forcomb {  $ret{join("",sort @w[@_])}=1; } @w, $i;
+    }
+    return keys %ret
+}
+
+
+sub combinations_old { 
+   my($str)=@_;
+    my @w = split(//,$str);
+    my %ret;
+    foreach my $i  ( $gl::minlength .. scalar(@w)){ 
+	$ret{join("",sort @$_)}=1 foreach(Algorithm::Combinatorics::combinations(\@w,$i));
+    }
+    return keys %ret;
+}
+
+sub combinations_old2 {
+    my ($str)=@_;
+    my($str)=sword($str);
+    my @words = ($str);
+    my $wlen = length($str);
+    if($wlen <= $gl::minlength) {
+        return @words;
+    }
+    my %s;
+    foreach my $i(0 .. $wlen-1){
+        my $x = $str;
+        substr($x,$i,1)='';
+        next if($s{$x}++);
+        push @words, combinations($x);
+    }
+    return @words;
+}
+
+sub sword {
+    my @ret;
+    foreach my $w(@_){
+        push @ret , join("",sort (split(//,$w)));
+    }
+    return wantarray ? @ret : $ret[0];
+}
+
+sub findWords { 
+    my($dbh,$str,$h)=@_;
+    my @words;
+
+    my $t0 = [gettimeofday];
+
+    foreach my $ww (@{$str}) { 
+#	print "Getting combinations of $ww\n";
+	push @words , combinations($ww);
+    }
+    $t0 = elapsed($t0,"getting combinations for " . scalar(@words));
+    my $subw="";
+    if($h->{subw}) {
+	$subw = "word like '".$h->{subw}."' and ";
+    }
+    my $ans = get_mysqlwords($dbh,$subw,\@words);
+    $t0 = elapsed($t0,"All done " . scalar(@$ans));
+    return $ans;
+
+}
+
+sub get_mysqlwords { 
+  my ($dbh,$subw,$w)=@_;  
+  my @ret = () ;
+  my %seen=();
+  my @allwords = @{$w};
+  my @splitArray =();
+  while(@allwords) { 
+      my @chunk=();
+      while(1){ 
+	  my $single = pop(@allwords);
+	  last unless($single);
+	  push @chunk , $single unless($seen{$single}++);
+	  last if(@chunk >= 200);
+      }
+      push @splitArray , \@chunk if(@chunk);
+  }
+#  print Dumper(\@splitArray); exit;
+  foreach my $sp (@splitArray) { 
+      my $sql = "select word from words where $subw sword in (" . 
+	  addQuotes(@{$sp}) . 
+	  ") and wlen < 10 and common > 1 order by common desc,wlen desc";
+ #     print "$sql\n";
+      my $ans =  $dbh->selectcol_arrayref($sql);
+      push @ret , $_ foreach(@{$ans});
+  }
+  return \@ret;
+} 
+
+
+
+
+sub elapsed { 
+    my($t0,$msg)=@_;
+    my $el = tv_interval($t0);
+    my $str = "Time taken for $msg = $el";
+    print STDERR $str;
+#    print "$str<br/>\n";
+    return [gettimeofday];
+}
+
+sub reMatch { 
+    my($w,$h)=@_;
+    my $x = $h->{re};
+    return @$w;# unless($x=~/\w/);    
+    $x=~s/.\?//g;
+    $x=~s/[^a-z]//g;
+    my @must = split(//,$x);
+#    return @$w ;
+    my @ret;
+    foreach my $in(@$w){ 
+	my $push=1;
+	foreach my $m(@must){ 
+	    unless(index($in,$m)){ 
+		$push=0;
+		last;
+	    }
+	}
+	push @ret , $in if($push);
+    }
+    return @ret;
+}
+
+
+sub uniq { 
+    my @ret;
+    my %s;
+    my $count=0;
+    foreach (sort (@_)) { 
+	push @ret, $_ unless ($s{$_}++);
+#	last if($count++ > 50);
+    }
+#    print join("<br/>",@ret);
+    return @ret;
+}
+	
+sub addQuotes { 
+    my $str="";
+    foreach (@_){ 
+	$str .="'$_',";
+    }
+    chop $str;
+    return $str
+	
+}
+
+sub filterMids { 
+    my($d,$mref)=@_;
+    my @ret=();
+    my @da = @{$d};
+    foreach (@da){ 
+	push @ret , $_	if(ismid($_,$mref))
+    }
+    return @ret;
+}
+
+sub ismid { 
+    my($word,$mref)=@_;
+    foreach my $m(@{$mref}){ 
+	my $l = int ( length($word) / 2 );
+	my $max = $l+1;
+	my $min = $l-1;
+	if($word=~/^.{$min,$max}${m}.{$min,$max}/){ 
+	    print STDERR "Found midchar $word -> $m\n";
+	    return 1;
+	}
+    }
+    return 0;
+}
+    
+
+
+sub populate_data { 
+  my($dbh,$in,$h)=@_;
+#  my @data = `/home/ram/go/gohttp/words/findWords -c 1 -i $in`;
+#  chomp @data;
+#  $h->{data}=\@data;
+  $h->{data}=findWords($dbh,$in,$h);
+}
+
+sub uniqueOf { 
+    my $w = $_[0];
+    my @ret;
+    my %seen;
+    my @l = split(//,$w);
+    foreach (sort @l) { 
+	next if ($seen{$_}++);
+	push @ret , $_;
+    }
+    return @ret;
+}
+
+
+
+
+
+__DATA__
+<HTML>
+<title>words</title>
+<head>
+
+<style>
+</style>
+<script src="/jquery-3.5.1.js"></script>
+
+
+<script language="javascript">
+
+
+
+$(document).keydown(function(e) {
+   if(e.keyCode == 221){
+    document.getElementById('regexp').focus();
+    document.getElementById('regexp').select();
+    return false;
+   }
+   if(e.keyCode == 220){
+    document.getElementById('inwords').focus();
+    document.getElementById('inwords').select();
+    return false;
+   }
+
+});
+
+
+
+function remWord(word) {
+  if(word.indexOf('{') > -1){ 
+    word = word.replace(/ \{.\}$/,"");
+  }
+  if(!confirm("Do you really want to remove " + word )){ 
+    return false;
+  }
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+     document.getElementById("message").innerHTML = this.responseText;
+    }
+  };
+  xhttp.open("GET", "/cgi-bin/pword/words?remWord=" + word, true);
+  xhttp.send();
+}
+
+function midFav(){ 
+    var word=document.getElementById('inwords').value;
+    var lastChar = word[word.length -1];
+    document.getElementById('regexp').value='...'+lastChar+'...';
+}
+    
+function addOne(){ 
+    var word=document.getElementById('inwords').value;
+    document.getElementById('regexp').value=word;
+    document.getElementById('find7').checked=true;
+   
+}
+    
+
+
+function clear1(){ 
+    document.getElementById('inwords').value='';
+    document.getElementById('regexp').value='';
+    document.getElementById('midchar').value='';
+    document.getElementById('echar').value='';
+//    document.getElementById('subw').value='';
+    document.getElementById('inwords').focus();
+}
+
+
+
+
+function defineWord(word) {
+  if(word.indexOf('{') > -1){ 
+    word = word.replace(/ \{..?\}$/,"");
+  }
+    var url = "http://google.co.in/search?q=define+"+word+"&ie=utf-8&oe=utf-8&client=firefox-b";
+    window.open(url);
+}
+
+
+</script>
+</head>
+
+<body onLoad="document.getElementById('inwords').focus();">
+<form name=words method=get autocomplete="off">
+
+letters: <input id="inwords" name=inword value="[% inword %]">  
+<input type=button onClick="clear1();" value=clear>   
+
+&nbsp;
+&nbsp;
+&nbsp;
+<input type=button onClick="midFav();" value=fav>
+
+
+
+&nbsp;
+&nbsp;
+&nbsp;
+<input type=button onClick="addOne();" value=addOne>
+
+<br/>
+ 
+Reg: <input name=re value="[% re %]" id=regexp><br/>
+Midchar: <input name=midchar value="[% midchar %]" id=midchar><br/>
+8char: <input name=echar value="[% echar %]" id=echar><br/>
+
+
+<br/>
+
+
+
+
+Find7 <input type=checkbox id=find7 name=find7 >
+<br/>
+
+<br/>
+Find9 <input type=checkbox name=find9 >
+<br/>
+
+<input type=submit onClick="document.forms[0].submit();">
+<br/>
+
+
+
+<br><br><br><br><br><br>
+<p id=message>
+[% message %]
+</p>
+<p>
+
+<table border=0 cellspacing="20">
+<tr>
+
+
+<td valign="top">
+<table border=0>
+<tr><td>[% tw9 %]</td></tr>
+[% FOREACH W  IN w9 %]
+<tr>
+<td valign="top">
+<a href="" onClick="remWord('[% W %]');return false"><font size="-10">&#9746;</font></a>
+<a href="#" onClick="defineWord('[% W %]')"> [% W %]</a> 
+</td>
+</tr>
+[% END %]
+</table>
+</td>
+
+
+
+
+<td valign="top">
+<table border=0>
+<tr><td>[% tw8 %]</td></tr>
+[% FOREACH W  IN w8 %]
+<tr>
+<td valign="top">
+<a href="" onClick="remWord('[% W %]');return false"><font size="-10">&#9746;</font></a>
+<a href="#" onClick="defineWord('[% W %]')"> [% W %]</a> 
+</td>
+</tr>
+[% END %]
+</table>
+</td>
+
+
+
+
+
+
+<td valign="top">
+<table border=0>
+<tr><td>[% tw7 %]</td></tr>
+[% FOREACH W  IN w7 %]
+<tr>
+<td valign="top">
+<a href="" onClick="remWord('[% W %]');return false"><font size="-10">&#9746;</font></a>
+<a href="#" onClick="defineWord('[% W %]')"> [% W %]</a>
+</td>
+</tr>
+[% END %]
+</table>
+</td>
+
+<td valign="top">
+<table border=0>
+<tr><td>[% tw6 %]</td></tr>
+[% FOREACH W  IN w6 %]
+<tr>
+<td valign="top">
+    <a href="" onClick="remWord('[% W %]');return false"><font size="-10">&#9746;</font></a>
+<a href="#" onClick="defineWord('[% W %]')"> [% W %]</a>
+
+</td>
+</tr>
+[% END %]
+</table>
+</td>
+
+<td valign="top">
+<table border=0>
+<tr><td>[% tw5 %]</td></tr>
+[% FOREACH W  IN w5 %]
+<tr>
+<td valign="top">
+<a href="" onClick="remWord('[% W %]');return false"><font size="-10">&#9746;</font></a>
+<a href="#" onClick="defineWord('[% W %]')"> [% W %]</a>
+</td>
+</tr>
+[% END %]
+</table>
+</td>
+
+<td valign="top">
+<table border=0>
+<tr><td>[% tw4 %]</td></tr>
+[% FOREACH W  IN w4 %]
+<tr>
+<td valign="top">
+<a href="" onClick="remWord('[% W %]');return false"><font size="-10">&#9746;</font></a>
+<a href="#" onClick="defineWord('[% W %]')"> [% W %]</a>
+</td>
+</tr>
+[% END %]
+</table>
+</td>
+<td valign="top">
+
+<table border=0>
+<tr><td>[% tw3 %]</td></tr>
+[% FOREACH W  IN w3 %]
+<tr>
+<td valign="top">
+<a href="" onClick="remWord('[% W %]');return false"><font size="-10">&#9746;</font></a>
+<a href="#" onClick="defineWord('[% W %]')"> [% W %]</a>
+</td>
+</tr>
+[% END %]
+</table>
+</td>
+
+</tr>
+</table>
+
+</form>
+</body>
+</html>
+
+
